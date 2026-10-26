@@ -45,7 +45,7 @@ def _setup(context, *args, **kwargs):
 
     # 各世界仓库的 models 目录加入 GAZEBO_MODEL_PATH（保留原有路径）
     model_dirs = [os.path.join(worlds_base, repo, 'models')
-                  for repo, _ in WORLD_FILES.values()]
+                  for repo, _, _ in WORLD_FILES.values()]
     model_dirs.append(os.path.join(
         get_package_share_directory('turtlebot3_gazebo'), 'models'))
     gazebo_model_path = os.pathsep.join(model_dirs) + os.pathsep + \
