@@ -32,8 +32,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: 缓存 apt 软件包
+        uses: actions/cache@v4
+        with:
+          path: ~/apt-archives
+          key: apt-ros-humble-gazebo-tb3-v1
+
       - name: 配置 ROS 2 Humble 软件源
         run: |
+          echo 'Dir::Cache::archives "/home/runner/apt-archives";' | sudo tee /etc/apt/apt.conf.d/00cache-dir
+          sudo mkdir -p /home/runner/apt-archives
+          sudo chown runner:runner /home/runner/apt-archives
+          echo 'Acquire::Retries "5";' | sudo tee /etc/apt/apt.conf.d/80-retries
           sudo apt-get update -qq
           sudo apt-get install -y -qq curl gnupg2 lsb-release
           sudo curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
@@ -43,17 +53,20 @@ jobs:
           sudo apt-get update -qq
 
       - name: 安装仿真与导航相关包
+        timeout-minutes: 20
         run: |
           # libunwind-dev 须先装，避免 libgoogle-glog-dev 依赖冲突
           sudo apt-get install -y libunwind-dev
-          sudo apt-get install -y --no-install-recommends \
+          # 精简安装：不用 turtlebot3 大礼包元包，只装仿真必需组件
+          timeout 1100 sudo -E apt-get install -y --no-install-recommends \
             ros-humble-ros-base \
             ros-humble-gazebo-ros-pkgs \
             ros-humble-navigation2 \
             ros-humble-nav2-bringup \
             ros-humble-slam-toolbox \
-            ros-humble-turtlebot3 \
             ros-humble-turtlebot3-gazebo \
+            ros-humble-turtlebot3-description \
+            ros-humble-turtlebot3-msgs \
             ros-humble-robot-state-publisher \
             python3-colcon-common-extensions
           gazebo --version | head -1
