@@ -1,0 +1,170 @@
+name: nav2-aws-world-test
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      world:
+        description: '世界: house / warehouse'
+        required: false
+        default: 'house'
+      explore_time:
+        description: 'SLAM 探索时长(仿真秒)'
+        required: false
+        default: '480'
+      n_goals:
+        description: '导航测试目标点数量'
+        required: false
+        default: '3'
+
+jobs:
+  nav-test:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    env:
+      WORLD: ${{ github.event.inputs.world || 'house' }}
+      EXPLORE_TIME: ${{ github.event.inputs.explore_time || '480' }}
+      N_GOALS: ${{ github.event.inputs.n_goals || '3' }}
+      TURTLEBOT3_MODEL: waffle
+      DEBIAN_FRONTEND: noninteractive
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 ROS 2 Humble
+        uses: ros-tooling/setup-ros@v0.7
+        with:
+          platform-version: humble
+
+      - name: 安装仿真与导航相关包
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ros-humble-ros-base \
+            ros-humble-gazebo-ros-pkgs \
+            ros-humble-navigation2 \
+            ros-humble-nav2-bringup \
+            ros-humble-slam-toolbox \
+            ros-humble-turtlebot3 \
+            ros-humble-turtlebot3-gazebo \
+            ros-humble-robot-state-publisher \
+            python3-colcon-common-extensions
+          gazebo --version | head -1
+
+      - name: 克隆 AWS RoboMaker 世界
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/worlds_src"
+          cd "$GITHUB_WORKSPACE/worlds_src"
+          git clone --depth 1 -b ros2 https://github.com/aws-robotics/aws-robomaker-small-house-world.git aws-robomaker-small-house-world
+          git clone --depth 1 -b ros2 https://github.com/aws-robotics/aws-robomaker-small-warehouse-world.git aws-robomaker-small-warehouse-world
+          ls aws-robomaker-small-house-world/worlds aws-robomaker-small-warehouse-world/worlds
+          echo "AWS_WORLDS_BASE=$GITHUB_WORKSPACE/worlds_src" >> "$GITHUB_ENV"
+
+      - name: 编译工作空间
+        run: |
+          source /opt/ros/humble/setup.bash
+          cd "$GITHUB_WORKSPACE"
+          colcon build --symlink-install 2>&1 | tail -3
+          source install/setup.bash
+          ros2 pkg list | grep aws_world_nav
+
+      - name: 冒烟测试 (世界加载 + 机器人生成 + 激光雷达)
+        run: |
+          source /opt/ros/humble/setup.bash
+          source "$GITHUB_WORKSPACE/install/setup.bash"
+          cd "$GITHUB_WORKSPACE"
+          setsid ros2 launch aws_world_nav aws_world.launch.py \
+            world:="$WORLD" gui:=false > smoke.log 2>&1 &
+          GZ_PID=$!
+          echo "GZ_PID=$GZ_PID"
+          sleep 75
+          echo "--- /scan 采样 ---"
+          timeout 30 ros2 topic echo /scan sensor_msgs/msg/LaserScan --once --field ranges | head -8
+          echo "--- 存活进程 ---"
+          pgrep -a gzserver | head -2
+          # 清理整组进程
+          kill -- -"$GZ_PID" 2>/dev/null || true
+          sleep 5
+          pkill -9 -f gzserver 2>/dev/null || true
+          pkill -9 -f spawn_entity 2>/dev/null || true
+          pkill -9 -f robot_state_pub 2>/dev/null || true
+          sleep 3
+          cat smoke.log | tail -20
+
+      - name: SLAM 自动建图
+        run: |
+          source /opt/ros/humble/setup.bash
+          source "$GITHUB_WORKSPACE/install/setup.bash"
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p maps
+          setsid ros2 launch aws_world_nav mapping.launch.py \
+            world:="$WORLD" gui:=false explore:=true explore_time:="$EXPLORE_TIME" \
+            > mapping.log 2>&1 &
+          MAP_PID=$!
+          # 等待 auto_explorer 节点退出（最长 28 分钟）
+          for i in $(seq 1 168); do
+            sleep 10
+            pgrep -f auto_explorer > /dev/null 2>&1 || break
+          done
+          pgrep -f auto_explorer > /dev/null 2>&1 && echo "!! 探索未在时限内结束" || echo "探索完成"
+          sleep 5
+          echo "--- 保存地图 ---"
+          timeout 60 ros2 run nav2_map_server map_saver_cli -f "maps/$WORLD" || echo "!! 地图保存失败"
+          ls -la maps/
+          kill -- -"$MAP_PID" 2>/dev/null || true
+          sleep 5
+          pkill -9 -f gzserver 2>/dev/null || true
+          pkill -9 -f slam_toolbox 2>/dev/null || true
+          sleep 3
+          echo "--- 建图日志尾部 ---"
+          tail -25 mapping.log
+
+      - name: 自动挑选导航目标点
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          GOALS=$(python3 src/aws_world_nav/aws_world_nav/pick_goals.py \
+            "maps/$WORLD.yaml" --n "$N_GOALS" --format flat)
+          echo "目标点: $GOALS"
+          echo "GOALS=$GOALS" >> "$GITHUB_ENV"
+
+      - name: Nav2 定位导航测试
+        run: |
+          source /opt/ros/humble/setup.bash
+          source "$GITHUB_WORKSPACE/install/setup.bash"
+          cd "$GITHUB_WORKSPACE"
+          setsid ros2 launch aws_world_nav navigation.launch.py \
+            world:="$WORLD" gui:=false "map:=$GITHUB_WORKSPACE/maps/$WORLD.yaml" \
+            > navigation.log 2>&1 &
+          NAV_PID=$!
+          echo "等待 Nav2 启动..."
+          sleep 70
+          timeout 20 ros2 topic echo /amcl_pose --once | head -8 || echo "!! AMCL 尚无输出"
+          echo "发送目标点: $GOALS"
+          set +e
+          timeout 900 ros2 run aws_world_nav send_goals --ros-args \
+            -p "goals:=[$GOALS]" \
+            -p "initial_pose:=[0.0,0.0,0.0]" 2>&1 | tee nav_result.log
+          RC=${PIPESTATUS[0]}
+          kill -- -"$NAV_PID" 2>/dev/null || true
+          sleep 5
+          pkill -9 -f gzserver 2>/dev/null || true
+          pkill -9 -f component_container 2>/dev/null || true
+          sleep 3
+          echo "--- 导航日志尾部 ---"
+          tail -30 nav_result.log
+          tail -15 navigation.log
+          exit $RC
+
+      - name: 上传产物 (地图与日志)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nav-artifacts-${{ env.WORLD }}
+          path: |
+            maps/
+            smoke.log
+            mapping.log
+            nav_result.log
+            navigation.log
+          if-no-files-found: ignore
