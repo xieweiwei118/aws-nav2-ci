@@ -89,6 +89,7 @@ jobs:
           ros2 pkg list | grep aws_world_nav
 
       - name: 冒烟测试 (世界加载 + 机器人生成 + 激光雷达)
+        timeout-minutes: 5
         run: |
           source /opt/ros/humble/setup.bash
           source "$GITHUB_WORKSPACE/install/setup.bash"
@@ -96,20 +97,20 @@ jobs:
           setsid ros2 launch aws_world_nav aws_world.launch.py \
             world:="$WORLD" gui:=false > smoke.log 2>&1 &
           GZ_PID=$!
-          echo "GZ_PID=$GZ_PID"
-          sleep 75
-          echo "--- /scan 采样 ---"
-          timeout 30 ros2 topic echo /scan sensor_msgs/msg/LaserScan --once --field ranges | head -8
-          echo "--- 存活进程 ---"
-          pgrep -a gzserver | head -2
-          # 清理整组进程
+          sleep 60
+          echo "--- 检查 gzserver ---"
+          pgrep -f gzserver > /dev/null || { echo "!! gzserver 未运行"; tail -30 smoke.log; exit 1; }
+          echo "--- 检查 /scan 激光雷达 ---"
+          timeout 30 ros2 topic echo /scan sensor_msgs/msg/LaserScan --once --field ranges > scan.txt || true
+          grep -q "data" scan.txt || { echo "!! 激光雷达无数据"; tail -30 smoke.log; exit 1; }
+          head -4 scan.txt
+          echo "冒烟测试通过"
           kill -- -"$GZ_PID" 2>/dev/null || true
           sleep 5
           pkill -9 -f gzserver 2>/dev/null || true
           pkill -9 -f spawn_entity 2>/dev/null || true
           pkill -9 -f robot_state_pub 2>/dev/null || true
           sleep 3
-          cat smoke.log | tail -20
 
       - name: SLAM 自动建图
         run: |
@@ -121,6 +122,12 @@ jobs:
             world:="$WORLD" gui:=false explore:=true explore_time:="$EXPLORE_TIME" \
             > mapping.log 2>&1 &
           MAP_PID=$!
+          # 等待 explorer 启动（最多 60 秒），未启动则快速失败
+          for i in $(seq 1 12); do
+            pgrep -f auto_explorer > /dev/null 2>&1 && break
+            sleep 5
+          done
+          pgrep -f auto_explorer > /dev/null 2>&1 || { echo "!! auto_explorer 未启动"; tail -40 mapping.log; exit 1; }
           # 等待 auto_explorer 节点退出（最长 28 分钟）
           for i in $(seq 1 168); do
             sleep 10
@@ -129,7 +136,8 @@ jobs:
           pgrep -f auto_explorer > /dev/null 2>&1 && echo "!! 探索未在时限内结束" || echo "探索完成"
           sleep 5
           echo "--- 保存地图 ---"
-          timeout 60 ros2 run nav2_map_server map_saver_cli -f "maps/$WORLD" || echo "!! 地图保存失败"
+          timeout 60 ros2 run nav2_map_server map_saver_cli -f "maps/$WORLD" || true
+          [ -f "maps/$WORLD.yaml" ] || { echo "!! 地图保存失败"; tail -40 mapping.log; exit 1; }
           ls -la maps/
           kill -- -"$MAP_PID" 2>/dev/null || true
           sleep 5
