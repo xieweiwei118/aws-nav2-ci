@@ -32,14 +32,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: 安装 ROS 2 Humble
-        uses: ros-tooling/setup-ros@v0.7
-        with:
-          platform-version: humble
+      - name: 配置 ROS 2 Humble 软件源
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq curl gnupg2 lsb-release
+          sudo curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
+            -o /usr/share/keyrings/ros-archive-keyring.gpg
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu jammy main" \
+            | sudo tee /etc/apt/sources.list.d/ros2.list
+          sudo apt-get update -qq
 
       - name: 安装仿真与导航相关包
         run: |
-          sudo apt-get update
+          # libunwind-dev 须先装，避免 libgoogle-glog-dev 依赖冲突
+          sudo apt-get install -y libunwind-dev
           sudo apt-get install -y --no-install-recommends \
             ros-humble-ros-base \
             ros-humble-gazebo-ros-pkgs \
