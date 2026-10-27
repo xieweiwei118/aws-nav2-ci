@@ -97,12 +97,16 @@ jobs:
           setsid ros2 launch aws_world_nav aws_world.launch.py \
             world:="$WORLD" gui:=false > smoke.log 2>&1 &
           GZ_PID=$!
-          sleep 60
+          sleep 75
           echo "--- 检查 gzserver ---"
           pgrep -f gzserver > /dev/null || { echo "!! gzserver 未运行"; tail -30 smoke.log; exit 1; }
+          echo "--- ROS 话题列表 ---"
+          timeout 30 ros2 topic list | tee topics.txt || true
+          echo "--- 检查 /clock (仿真时间是否推进) ---"
+          timeout 20 ros2 topic echo /clock --once 2>&1 | head -4 || echo "!! /clock 无数据"
           echo "--- 检查 /scan 激光雷达 ---"
-          timeout 30 ros2 topic echo /scan sensor_msgs/msg/LaserScan --once --field ranges > scan.txt || true
-          grep -q "data" scan.txt || { echo "!! 激光雷达无数据"; tail -30 smoke.log; exit 1; }
+          timeout 45 ros2 topic echo /scan --field ranges --once > scan.txt 2> scan_err.txt || true
+          grep -q "data" scan.txt || { echo "!! 激光雷达无数据"; echo '[scan_err]'; cat scan_err.txt; echo '[scan_out]'; cat scan.txt; echo '[smoke.log 尾部]'; grep -v ALSA smoke.log | tail -40; exit 1; }
           head -4 scan.txt
           echo "冒烟测试通过"
           kill -- -"$GZ_PID" 2>/dev/null || true
