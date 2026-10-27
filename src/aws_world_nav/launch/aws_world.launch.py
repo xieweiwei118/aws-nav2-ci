@@ -77,9 +77,17 @@ def _setup(context, *args, **kwargs):
         launch_arguments={'use_sim_time': 'true'}.items(),
     )
 
+    # Humble 版 TurtleBot3 的传感器/驱动插件都在 Gazebo 模型 SDF 中（URDF 仅用于 TF）
+    # 因此按官方方式用 -file model.sdf 生成，而不是 -topic robot_description
+    tb3_model = os.environ.get('TURTLEBOT3_MODEL', 'waffle')
+    model_sdf = os.path.join(tb3_gazebo_dir, 'models',
+                             f'turtlebot3_{tb3_model}', 'model.sdf')
+    if not os.path.isfile(model_sdf):
+        raise RuntimeError(f'模型 SDF 不存在: {model_sdf}')
+
     spawn_entity_cmd = Node(
         package='gazebo_ros', executable='spawn_entity.py',
-        arguments=['-entity', 'waffle', '-topic', 'robot_description',
+        arguments=['-entity', tb3_model, '-file', model_sdf,
                    '-x', x_pose, '-y', y_pose, '-z', '0.01', '-Y', yaw],
         output='screen',
     )
