@@ -37,8 +37,8 @@ jobs:
         with:
           path: ~/apt-archives
           key: apt-ros-humble-gazebo-tb3-v1
-        # 任务失败也保存缓存，下次运行免全量下载
-        save-always: true
+          # 任务失败也保存缓存，下次运行免全量下载
+          save-always: true
 
       - name: 配置 ROS 2 Humble 软件源
         run: |
