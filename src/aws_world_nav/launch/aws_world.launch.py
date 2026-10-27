@@ -79,7 +79,7 @@ def _setup(context, *args, **kwargs):
 
     spawn_entity_cmd = Node(
         package='gazebo_ros', executable='spawn_entity.py',
-        arguments=['-topic', 'robot_description',
+        arguments=['-entity', 'waffle', '-topic', 'robot_description',
                    '-x', x_pose, '-y', y_pose, '-z', '0.01', '-Y', yaw],
         output='screen',
     )
