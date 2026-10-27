@@ -37,6 +37,8 @@ jobs:
         with:
           path: ~/apt-archives
           key: apt-ros-humble-gazebo-tb3-v1
+        # 任务失败也保存缓存，下次运行免全量下载
+        save-always: true
 
       - name: 配置 ROS 2 Humble 软件源
         run: |
@@ -102,6 +104,12 @@ jobs:
           pgrep -f gzserver > /dev/null || { echo "!! gzserver 未运行"; tail -30 smoke.log; exit 1; }
           echo "--- ROS 话题列表 ---"
           timeout 30 ros2 topic list | tee topics.txt || true
+          echo "--- ROS 节点列表 ---"
+          timeout 30 ros2 node list | tee nodes.txt || true
+          echo "--- robot_description 中的 gazebo 插件数 ---"
+          timeout 30 ros2 topic echo /robot_description --once --field data 2>/dev/null | grep -c "libgazebo_ros" || echo 0
+          echo "--- gz 生成模型检查 ---"
+          timeout 20 gz model --model waffle --inspect 2>&1 | grep -i "sensor\|plugin" | head -20 || true
           echo "--- 检查 /clock (仿真时间是否推进) ---"
           timeout 20 ros2 topic echo /clock --once 2>&1 | head -4 || echo "!! /clock 无数据"
           echo "--- 检查 /scan 激光雷达 ---"
